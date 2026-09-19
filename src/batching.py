@@ -226,3 +226,34 @@ def describe_batching(batchers: dict[str, DomainBatcher]) -> None:
         sample = b.next_batch()
         print(f"  {name:<10} {b.strategy:<38} {sample.num_nodes:>12,} "
               f"{sample.num_edges:>12,}")
+
+
+@torch.no_grad()
+def calibrate_batchnorm(encoder, domain: GraphDomain, x: np.ndarray, device,
+                        passes: int = 1, seed: int = 0) -> None:
+    """Estimate BatchNorm running statistics by running data through the encoder.
+
+    Necessary for any encoder that has not been trained -- which is exactly
+    arm B, the random-init baseline.
+
+    An untrained BatchNorm layer still holds its initial running statistics
+    (mean 0, variance 1), and in eval mode it uses them, so it performs no
+    normalisation whatsoever. That is not a neutral baseline, it is a broken
+    one: GIN aggregates neighbours by SUM, so on a graph with average degree
+    31 (Amazon Photo) two layers amplify activations by roughly 31^2. Measured
+    on Photo, the uncalibrated random-init encoder produced embeddings with
+    mean norm 1730 and an effective rank of 5.3 out of 128 dimensions -- a
+    collapsed, exploding representation.
+
+    Running a few forward passes in train mode lets BatchNorm accumulate real
+    statistics, without a single gradient step and without touching a label.
+    Arm B then measures what it is supposed to measure: an untrained network,
+    not an unnormalised one.
+    """
+    encoder.to(device).train()
+    batcher = DomainBatcher(domain, x, seed=seed)
+    n_batches = max(1, batcher.batches_per_epoch) * passes
+    for _ in range(n_batches):
+        batch = batcher.next_batch().to(device)
+        encoder(batch.x, batch.edge_index)
+    encoder.eval()

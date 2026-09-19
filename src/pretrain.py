@@ -186,3 +186,34 @@ def pretrain_multi_domain(
     history = _pretrain(model, batchers, device, steps, lr, patience, seed,
                         log_every, verbose)
     return model.encoder, history
+
+
+def random_init_encoder(domain, x: np.ndarray, device, seed: int = 0,
+                        config=None, calibrate: bool = True, **encoder_kwargs):
+    """Arm B: an untrained encoder, with BatchNorm statistics calibrated.
+
+    The calibration is not optional cosmetics, it is what makes arm B a valid
+    control. BatchNorm in a freshly constructed module holds placeholder
+    running statistics (mean 0, variance 1) and in eval mode applies them
+    literally -- meaning it performs no normalisation at all. Probing that is
+    not "the same encoder without pretraining", it is a different architecture
+    with its normalisation layers disabled.
+
+    Measured on Amazon Photo, where GIN's SUM aggregation over an average
+    degree of 31 compounds across two layers: the uncalibrated encoder
+    produced embeddings with mean norm 1730 and effective rank 5.3 of 128
+    dimensions. Calibrated, the same weights give mean norm 7.7 and effective
+    rank 16.6.
+
+    Calibration runs forward passes only. No gradients, no labels.
+    """
+    from .batching import calibrate_batchnorm
+    from .models import build_encoder
+    from .seeding import set_seed
+
+    set_seed(seed)
+    encoder = build_encoder(config, **encoder_kwargs).to(device)
+    if calibrate:
+        calibrate_batchnorm(encoder, domain, x, device, passes=3, seed=seed)
+    encoder.eval()
+    return encoder

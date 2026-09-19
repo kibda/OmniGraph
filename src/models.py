@@ -21,6 +21,7 @@ which is exactly what we do not want it to specialise in.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -133,6 +134,26 @@ class GINEncoder(nn.Module):
 # Deep Graph Infomax
 # --------------------------------------------------------------------------
 
+@contextmanager
+def frozen_batchnorm_stats(module: nn.Module):
+    """Run a forward pass without letting BatchNorm update its running stats.
+
+    Inside the block, BatchNorm still normalises using the current batch's
+    statistics (exactly as it does in training); it simply does not fold those
+    statistics into the running averages used at inference.
+    """
+    touched = []
+    for m in module.modules():
+        if isinstance(m, nn.modules.batchnorm._BatchNorm) and m.track_running_stats:
+            m.track_running_stats = False
+            touched.append(m)
+    try:
+        yield
+    finally:
+        for m in touched:
+            m.track_running_stats = True
+
+
 def corrupt_features(x: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
     """Build the negative example: same graph, shuffled node features.
 
@@ -225,7 +246,22 @@ class DeepGraphInfomax(nn.Module):
         summary = self.summarise(h_real)
 
         x_fake = corrupt_features(x, generator=generator)
-        h_fake = self.encoder(x_fake, edge_index)
+        # The corrupted pass must NOT update BatchNorm's running statistics.
+        #
+        # Those statistics are what BatchNorm uses at inference, and inference
+        # only ever runs on real graphs. Letting the corrupted pass contribute
+        # makes them an average of real and shuffled-feature activations, which
+        # are not the same distribution -- so every embedding produced
+        # afterwards is normalised by statistics describing data the model will
+        # never see again.
+        #
+        # This was measured, not assumed: without the freeze, DGI pretraining
+        # made the probe WORSE than random initialisation on both Cora and
+        # Photo, at every checkpoint. The comparison was also unfair, because
+        # an untrained encoder still has BatchNorm's pristine defaults (mean 0,
+        # variance 1), which act as no normalisation at all.
+        with frozen_batchnorm_stats(self.encoder):
+            h_fake = self.encoder(x_fake, edge_index)
 
         disc = self.discriminators[domain]
         pos_logits = disc(h_real, summary)
