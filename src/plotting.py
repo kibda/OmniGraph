@@ -435,3 +435,111 @@ def plot_unified_scales(unified: dict, transforms: dict, svd_dim: int = 128,
     if save_as:
         print(f"saved -> {save_figure(fig, save_as)}")
     return fig
+
+
+# --------------------------------------------------------------------------
+# Pretraining (notebook 03)
+# --------------------------------------------------------------------------
+
+def plot_pretrain_curve(history, domain_name: str,
+                        save_as: str | None = "03_dgi_loss_curve"):
+    """DGI loss and discriminator accuracy over training steps.
+
+    Two panels sharing an x axis rather than one chart with two y scales.
+    Loss and accuracy have different units and different ranges; putting them
+    on twin axes would invent a visual relationship between them.
+
+    Read them together. Loss falling while accuracy climbs to 1.0 means the
+    encoder has *solved* the pretext task -- which is not automatically good
+    news. A saturated objective supplies no further gradient, so any steps
+    after that point are drift rather than learning.
+    """
+    import matplotlib.pyplot as plt
+
+    color = color_for(domain_name)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.5, 5.4), sharex=True,
+                                   gridspec_kw={"hspace": 0.18})
+
+    ax1.plot(history.steps, history.loss, color=color, linewidth=2.0)
+    ax1.set_ylabel("DGI loss")
+    ax1.set_yscale("log")
+    ax1.set_title(f"Deep Graph Infomax on {domain_name}", color=TEXT_PRIMARY)
+    if history.best_step > 0:
+        ax1.axvline(history.best_step, color=TEXT_MUTED, linestyle=":", linewidth=1.2)
+        ax1.annotate(f"best: step {history.best_step}\nloss {history.best_loss:.4g}",
+                     xy=(history.best_step, history.best_loss), xytext=(8, 14),
+                     textcoords="offset points", fontsize=8, color=TEXT_SECONDARY)
+
+    ax2.plot(history.steps, history.accuracy, color=color, linewidth=2.0)
+    ax2.axhline(0.5, color=TEXT_MUTED, linestyle="--", linewidth=1.0)
+    ax2.annotate("chance (0.5)", xy=(history.steps[-1], 0.5), xytext=(-4, 6),
+                 textcoords="offset points", ha="right", fontsize=7.5,
+                 color=TEXT_MUTED)
+    ax2.set_ylabel("discriminator accuracy")
+    ax2.set_xlabel("training step")
+    ax2.set_ylim(0.3, 1.05)
+
+    solved = next((s for s, a in zip(history.steps, history.accuracy) if a >= 0.99), None)
+    if solved:
+        for ax in (ax1, ax2):
+            ax.axvspan(solved, history.steps[-1], color=TEXT_MUTED, alpha=0.07)
+        ax2.annotate(f"task solved from step {solved} on",
+                     xy=(solved, 0.62), xytext=(6, 0), textcoords="offset points",
+                     fontsize=8, color=TEXT_SECONDARY)
+
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
+
+
+def plot_tsne_facets(before: np.ndarray, after: np.ndarray, labels: np.ndarray,
+                     domain_name: str, class_names: list[str] | None = None,
+                     save_as: str | None = "03_tsne_before_after"):
+    """t-SNE of the embeddings, one small panel per class.
+
+    Why facets instead of one scatter with seven colours: seven hues in a
+    single scatter cannot be told apart reliably by every reader, and colour
+    would be the only thing carrying class identity. Here each panel uses ONE
+    hue, showing that class against the rest of the cloud in grey, so the
+    question "did this class become concentrated?" is answerable panel by
+    panel without depending on colour discrimination at all.
+
+    Top row is the untrained encoder, bottom row the pretrained one. If
+    pretraining helped, the coloured points should be tighter in the bottom
+    row than the top.
+    """
+    import matplotlib.pyplot as plt
+
+    classes = np.unique(labels)
+    n_cls = len(classes)
+    color = color_for(domain_name)
+
+    fig, axes = plt.subplots(2, n_cls, figsize=(1.45 * n_cls + 0.8, 3.6),
+                             squeeze=False)
+    for row, (emb, row_label) in enumerate([(before, "before\n(random init)"),
+                                            (after, "after\n(DGI pretrained)")]):
+        for col, cls in enumerate(classes):
+            ax = axes[row][col]
+            mask = labels == cls
+            ax.scatter(emb[~mask, 0], emb[~mask, 1], s=1.0, c=GRID,
+                       linewidths=0, rasterized=True)
+            ax.scatter(emb[mask, 0], emb[mask, 1], s=1.8, c=color,
+                       linewidths=0, rasterized=True)
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.grid(False)
+            for spine in ax.spines.values():
+                spine.set_color(GRID)
+            if row == 0:
+                name = class_names[col] if class_names else f"class {cls}"
+                ax.set_title(name, fontsize=8, color=TEXT_PRIMARY)
+            if col == 0:
+                ax.set_ylabel(row_label, fontsize=8, color=TEXT_SECONDARY)
+
+    fig.suptitle(
+        f"Does DGI pretraining concentrate the classes?  ({domain_name})",
+        fontsize=11, fontweight="semibold", color=TEXT_PRIMARY, y=1.02,
+    )
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
