@@ -543,3 +543,60 @@ def plot_tsne_facets(before: np.ndarray, after: np.ndarray, labels: np.ndarray,
     if save_as:
         print(f"saved -> {save_figure(fig, save_as)}")
     return fig
+
+
+# --------------------------------------------------------------------------
+# Label efficiency (notebooks 04-06)
+# --------------------------------------------------------------------------
+
+def plot_label_efficiency(sweep_df, arm_label: str = "",
+                          save_as: str | None = "04_label_efficiency"):
+    """Score against label fraction, one panel per domain.
+
+    Faceted rather than overlaid because the four domains use three different
+    metrics on three different scales -- putting accuracy, micro-F1 and AUC-PR
+    on one axis would invite comparisons between numbers that do not mean the
+    same thing.
+
+    The x axis is log-spaced: the interesting behaviour is at 1% and 5%, where
+    pretraining should help most if it helps at all, and a linear axis would
+    squash those points against the origin.
+    """
+    import matplotlib.pyplot as plt
+
+    domains = [d for d in DOMAIN_COLORS if d in set(sweep_df["domain"])]
+    fig, axes = plt.subplots(1, len(domains), figsize=(3.1 * len(domains), 3.5))
+    if len(domains) == 1:
+        axes = [axes]
+
+    for ax, name in zip(axes, domains):
+        sub = sweep_df[sweep_df["domain"] == name].sort_values("fraction")
+        color = color_for(name)
+        ax.plot(sub["fraction"] * 100, sub["test_score"], color=color,
+                linewidth=2.0, marker="o", markersize=5)
+        metric = sub["metric"].iloc[0]
+        ax.set_xscale("log")
+        ax.set_xticks([1, 5, 10, 50, 100])
+        ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        ax.set_xlabel("% of training labels")
+        ax.set_title(f"{name}\n({metric})", color=TEXT_PRIMARY, fontsize=9)
+        ax.grid(axis="x", visible=False)
+        if ax is axes[0]:
+            ax.set_ylabel("test score")
+        # Direct-label the endpoints so the reader never needs the axis alone.
+        for _, row in sub.iloc[[0, -1]].iterrows():
+            ax.annotate(f"{row['test_score']:.3f}",
+                        xy=(row["fraction"] * 100, row["test_score"]),
+                        xytext=(0, 8), textcoords="offset points",
+                        ha="center", fontsize=7.5, color=TEXT_SECONDARY)
+        lo, hi = sub["test_score"].min(), sub["test_score"].max()
+        pad = max((hi - lo) * 0.25, 0.02)
+        ax.set_ylim(lo - pad, hi + pad * 1.4)
+
+    title = "Label efficiency" + (f" -- {arm_label}" if arm_label else "")
+    fig.suptitle(title, fontsize=12, fontweight="semibold",
+                 color=TEXT_PRIMARY, y=1.04)
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig

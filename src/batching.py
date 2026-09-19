@@ -112,6 +112,7 @@ class DomainBatcher:
             not self.multi_graph and domain.graphs[0].num_nodes > max_full_nodes
         )
         self._cursor = 0
+        self._measured_batch_nodes: int | None = None
 
     # -- description -------------------------------------------------------
 
@@ -125,11 +126,23 @@ class DomainBatcher:
 
     @property
     def batches_per_epoch(self) -> int:
-        """How many batches cover the domain once."""
+        """How many batches it takes to cover the domain once.
+
+        For sampled batches this is measured, not assumed. A 2-hop subgraph
+        grown from 4,096 seeds on Elliptic contains around 50,000 nodes -- the
+        expansion is the whole point -- so covering its 203,769 nodes takes
+        about 4 batches, not the 203,769/4,096 = 49 that counting seeds alone
+        would suggest. Getting this wrong made an arm C epoch 12x more
+        expensive than it needed to be.
+        """
         if self.multi_graph:
             return self.domain.num_graphs
         if self.needs_sampling:
-            return max(1, self.domain.graphs[0].num_nodes // self.seeds)
+            if self._measured_batch_nodes is None:
+                self._measured_batch_nodes = self._sampled_batch().num_nodes
+            per_batch = max(1, self._measured_batch_nodes)
+            n = self.domain.graphs[0].num_nodes
+            return max(1, int(np.ceil(n / per_batch)))
         return 1
 
     # -- production --------------------------------------------------------

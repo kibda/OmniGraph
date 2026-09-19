@@ -233,3 +233,68 @@ def print_split_summary(domain: GraphDomain, split: NodeSplit) -> None:
     else:
         print(f"  labels/node      : train {s['train_labels_per_node']}, "
               f"val {s['val_labels_per_node']}, test {s['test_labels_per_node']}")
+
+
+def subsample_train(
+    split: NodeSplit,
+    y: np.ndarray,
+    fraction: float,
+    seed: int,
+    task: str,
+    min_per_class: int = 1,
+) -> np.ndarray:
+    """Take a `fraction` of the training nodes, for the label-efficiency sweep.
+
+    Only the TRAINING set shrinks. Validation and test stay at full size in
+    every run, so a 1% point and a 100% point are scored on exactly the same
+    nodes and the curve measures label efficiency rather than evaluation noise.
+
+    Single-label domains are subsampled per class, so a 1% draw cannot
+    accidentally omit a class entirely -- on Elliptic, where the illicit class
+    is 9.8% of labelled nodes, a naive 1% random draw would sometimes contain
+    no positives at all and the probe would have nothing to learn.
+
+    PPI is multi-label: a node carries ~37 of 121 labels, so there is no single
+    class to stratify on and it gets a uniform random draw.
+    """
+    if fraction >= 1.0:
+        return split.train_idx
+
+    rng = np.random.default_rng(seed)
+    train_idx = split.train_idx
+
+    if task == "multilabel" or y.ndim > 1:
+        k = max(min_per_class, int(round(len(train_idx) * fraction)))
+        return np.sort(rng.choice(train_idx, size=min(k, len(train_idx)), replace=False))
+
+    labels = y[train_idx]
+    chosen = []
+    for cls in np.unique(labels):
+        pool = train_idx[labels == cls]
+        k = max(min_per_class, int(round(len(pool) * fraction)))
+        k = min(k, len(pool))
+        chosen.append(rng.choice(pool, size=k, replace=False))
+    return np.sort(np.concatenate(chosen))
+
+
+def label_fraction_report(split: NodeSplit, y: np.ndarray, task: str,
+                          fractions: list[float], seed: int = 0) -> "Any":
+    """How many labelled nodes each point of the sweep actually gets."""
+    import pandas as pd
+
+    rows = []
+    for frac in fractions:
+        idx = subsample_train(split, y, frac, seed, task)
+        row = {
+            "fraction": frac,
+            "train_nodes": len(idx),
+            "of_full_train": len(idx) / len(split.train_idx),
+        }
+        if y.ndim == 1:
+            counts = np.bincount(y[idx].astype(int))
+            row["smallest_class"] = int(counts[counts > 0].min())
+            row["classes_present"] = int((counts > 0).sum())
+        else:
+            row["labels_never_positive"] = int((y[idx].sum(axis=0) == 0).sum())
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("fraction")

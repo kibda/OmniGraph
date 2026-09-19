@@ -143,10 +143,15 @@ class RunConfig:
     pretrain_patience: int = 30
 
     # --- downstream linear probe ------------------------------------------
-    probe_epochs: int = 300
-    probe_lr: float = 1e-2
+    # Chosen so every domain reaches a validation plateau instead of hitting
+    # the epoch cap while still improving. At the original 300/1e-2/30,
+    # Elliptic's AUC-PR read 0.454 against a converged value of 0.663.
+    # These are optimiser settings shared by every arm.
+    probe_epochs: int = 3000
+    probe_lr: float = 0.5
     probe_weight_decay: float = 0.0
-    probe_patience: int = 30
+    probe_patience: int = 200
+    probe_standardize: bool = True
 
     notes: str = ""
 
