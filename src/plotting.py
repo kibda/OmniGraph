@@ -298,3 +298,140 @@ def plot_scale_comparison(domains: dict, save_as: str | None = "01_scale_compari
         path = save_figure(fig, save_as)
         print(f"saved -> {path}")
     return fig
+
+
+# --------------------------------------------------------------------------
+# Feature unification (notebook 02)
+# --------------------------------------------------------------------------
+
+def plot_svd_spectrum(transforms: dict, save_as: str | None = "02_svd_spectrum"):
+    """How much of each domain's information survives compression to 128 dims.
+
+    The curve is cumulative explained variance against number of components.
+    Where a curve is still climbing steeply at 128, the compression is
+    throwing information away; where it has flattened, 128 dims were more than
+    enough. The four domains differ sharply, and that asymmetry is a real
+    property of the design rather than a bug.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+    for name, tr in transforms.items():
+        ratios = tr.svd.explained_variance_ratio_
+        cum = ratios.cumsum()
+        xs = range(1, len(cum) + 1)
+        ax.plot(xs, cum, color=color_for(name), linewidth=2.0, label=name)
+        ax.annotate(
+            f"{name}  {cum[-1]:.0%}",
+            xy=(len(cum), cum[-1]), xytext=(6, 0), textcoords="offset points",
+            fontsize=8, color=TEXT_PRIMARY, va="center",
+        )
+    ax.set_xlabel("number of SVD components kept")
+    ax.set_ylabel("cumulative share of variance explained")
+    ax.set_title("What survives compression to 128 dimensions", color=TEXT_PRIMARY)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, 150)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
+
+
+def plot_structural_distributions(structural: dict, names: list[str],
+                                  save_as: str | None = "02_structural_features"):
+    """The five structural features, one panel each, compared across domains.
+
+    Boxes show the quartiles and whiskers the 5th-95th percentile; extreme
+    outliers are left off so the boxes stay readable, with the true maximum
+    annotated instead. These are the raw values, BEFORE standardization --
+    standardizing first would hide exactly the between-domain differences
+    this figure exists to show.
+    """
+    import matplotlib.pyplot as plt
+
+    n_feat = len(names)
+    fig, axes = plt.subplots(1, n_feat, figsize=(2.9 * n_feat, 3.8))
+    domains = list(structural.keys())
+
+    for j, (ax, fname) in enumerate(zip(axes, names)):
+        data = [structural[d][:, j] for d in domains]
+        bp = ax.boxplot(
+            data, vert=True, patch_artist=True, showfliers=False,
+            whis=(5, 95), widths=0.62,
+            medianprops=dict(color=SURFACE, linewidth=1.6),
+        )
+        for patch, d in zip(bp["boxes"], domains):
+            patch.set_facecolor(color_for(d))
+            patch.set_edgecolor(SURFACE)
+            patch.set_linewidth(1.5)
+        for element in ("whiskers", "caps"):
+            for item in bp[element]:
+                item.set_color(TEXT_MUTED)
+                item.set_linewidth(1.0)
+
+        ax.set_xticks(range(1, len(domains) + 1))
+        ax.set_xticklabels(domains, rotation=35, ha="right", fontsize=7.5)
+        ax.set_title(fname, color=TEXT_PRIMARY)
+        ax.grid(axis="x", visible=False)
+
+        maxima = ", ".join(f"{structural[d][:, j].max():.3g}" for d in domains)
+        ax.annotate(f"max: {maxima}", xy=(0.5, -0.42), xycoords="axes fraction",
+                    ha="center", va="top", fontsize=6.8, color=TEXT_MUTED)
+
+    fig.suptitle(
+        "The five structural features, before standardization",
+        fontsize=12, fontweight="semibold", color=TEXT_PRIMARY, y=1.04,
+    )
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
+
+
+def plot_unified_scales(unified: dict, transforms: dict, svd_dim: int = 128,
+                        save_as: str | None = "02_unified_scales"):
+    """Standard deviation of each of the 133 shared input dimensions.
+
+    One panel per domain. This is the figure that shows whether the shared
+    input space really is shared: the encoder sees all four of these, and if
+    one domain's inputs are an order of magnitude larger than another's, the
+    round-robin pretraining in notebook 03 will be dominated by whichever
+    domain shouts loudest.
+
+    The flat zero region on PPI is its zero-padding -- it has only 50 raw
+    features, so it cannot fill 128 SVD dimensions.
+    """
+    import matplotlib.pyplot as plt
+
+    names = list(unified.keys())
+    fig, axes = plt.subplots(1, len(names), figsize=(3.1 * len(names), 3.5),
+                             sharey=True)
+    for ax, name in zip(axes, names):
+        stds = unified[name].std(axis=0)
+        color = color_for(name)
+        ax.plot(range(svd_dim), stds[:svd_dim], color=color, linewidth=1.4,
+                label="SVD dims")
+        ax.plot(range(svd_dim, len(stds)), stds[svd_dim:], color=TEXT_SECONDARY,
+                linewidth=2.0, marker="o", markersize=4, label="structural dims")
+        ax.axvline(svd_dim - 0.5, color=TEXT_MUTED, linestyle=":", linewidth=1.0)
+        ax.set_yscale("log")
+        ax.set_title(name, color=TEXT_PRIMARY)
+        ax.set_xlabel("input dimension (0-132)")
+        tr = transforms[name]
+        if tr.padded_dims:
+            ax.annotate(f"{tr.padded_dims} zero-padded",
+                        xy=(0.97, 0.06), xycoords="axes fraction", ha="right",
+                        fontsize=7.5, color=TEXT_SECONDARY)
+        ax.grid(axis="x", visible=False)
+
+    axes[0].set_ylabel("std of that dimension (log)")
+    axes[0].legend(loc="lower left", fontsize=7)
+    fig.suptitle(
+        "Do all four domains arrive at the encoder on the same scale?",
+        fontsize=12, fontweight="semibold", color=TEXT_PRIMARY, y=1.04,
+    )
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
