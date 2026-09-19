@@ -112,6 +112,11 @@ def test_svd_basis_unchanged_when_test_rows_are_corrupted(loaded, name):
         clean.svd.singular_values_, dirty.svd.singular_values_,
         err_msg=f"{name}: SVD singular values moved when TEST rows changed",
     )
+    # The block-scaling scalar is a fitted parameter too, so it gets the
+    # same treatment: it is computed from the transformed TRAIN rows only.
+    assert clean.svd_scale == dirty.svd_scale, (
+        f"{name}: svd_scale moved when TEST rows changed -- the fit saw them"
+    )
 
 
 @pytest.mark.parametrize("name", TEST_DOMAINS)
@@ -268,3 +273,75 @@ def _shuffle_labels(domain, seed: int):
         perm = torch.as_tensor(rng.permutation(g.num_nodes), dtype=torch.long)
         g.y = g.y[perm]
     return new
+
+
+# --------------------------------------------------------------------------
+# 5. Scaling behaves as designed
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", TEST_DOMAINS)
+def test_block_scaling_puts_content_and_structure_on_one_footing(loaded, name):
+    """After block scaling, the SVD block's RMS std should be ~1.
+
+    That is the whole point of the scalar: the content block then sits at the
+    same scale as the standardized structural block, in every domain, so a
+    shared encoder is not dominated by whichever domain has the loudest
+    features.
+    """
+    domain, split, structural = loaded[name]
+    unified, tr, _ = features.build_unified_features(
+        domain, split, seed=SEED, svd_scaling="block",
+        structural=structural, verbose=False,
+    )
+    live = unified[:, : tr.n_components_used]
+    rms = float(np.sqrt(live.var(axis=0).mean()))
+    assert 0.8 < rms < 1.25, f"{name}: SVD block RMS std is {rms:.3f}, expected ~1"
+
+    struct_rms = float(np.sqrt(unified[:, 128:].var(axis=0).mean()))
+    assert 0.8 < struct_rms < 1.25, f"{name}: structural RMS std is {struct_rms:.3f}"
+
+
+@pytest.mark.parametrize("name", TEST_DOMAINS)
+def test_block_scaling_preserves_spectrum_shape(loaded, name):
+    """Scaling by one scalar must not reorder or reshape the SVD spectrum.
+
+    This is what separates block scaling from per-dimension standardization:
+    the ratio between any two components is unchanged, so component 0 stays
+    more important than component 127 instead of being flattened to equal.
+    """
+    domain, split, structural = loaded[name]
+
+    unscaled, tr_u, _ = features.build_unified_features(
+        domain, split, seed=SEED, svd_scaling="none",
+        structural=structural, verbose=False,
+    )
+    scaled, tr_s, _ = features.build_unified_features(
+        domain, split, seed=SEED, svd_scaling="block",
+        structural=structural, verbose=False,
+    )
+    k = tr_s.n_components_used
+    ratio_before = unscaled[:, :k].std(axis=0)
+    ratio_after = scaled[:, :k].std(axis=0)
+
+    np.testing.assert_allclose(
+        ratio_after * tr_s.svd_scale, ratio_before, rtol=1e-4,
+        err_msg=f"{name}: block scaling changed the relative spectrum",
+    )
+
+
+@pytest.mark.parametrize("name", TEST_DOMAINS)
+def test_zero_padding_stays_zero_after_scaling(loaded, name):
+    """Padded dimensions must remain exactly zero, whatever the scaling.
+
+    Scaling is applied before padding for this reason. A padded column that
+    picked up a non-zero mean would be inventing information.
+    """
+    domain, split, structural = loaded[name]
+    for mode in ("none", "block", "per_dim"):
+        unified, tr, _ = features.build_unified_features(
+            domain, split, seed=SEED, svd_scaling=mode,
+            structural=structural, verbose=False,
+        )
+        if tr.padded_dims:
+            pad = unified[:, tr.n_components_used:128]
+            assert np.all(pad == 0.0), f"{name}/{mode}: padded dims are not zero"

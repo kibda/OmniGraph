@@ -129,6 +129,7 @@ class RunConfig:
     svd_dim: int = 128
     n_structural: int = 5     # log1p(deg), clustering, pagerank, k-core, triangles
     # svd_dim + n_structural == encoder input dim (133)
+    svd_scaling: str = "block"   # none | block | per_dim -- see features.py
 
     # --- encoder ----------------------------------------------------------
     encoder: str = "gin"

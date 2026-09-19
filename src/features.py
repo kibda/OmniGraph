@@ -19,6 +19,28 @@ with the scaler also fit on training nodes only.
 
 128 + 5 = 133 dimensions, identical across all four domains.
 
+**Scaling (`svd_scaling`).** Equal width is not the same as equal footing.
+Raw SVD output arrives on wildly different scales -- Photo's leading component
+has standard deviation 7.2 while Cora's largest is 0.53 -- so without a
+correction, round-robin multi-domain pretraining would be dominated by
+whichever domain happens to shout loudest, and for Cora the 5 structural
+features would outweigh all 128 content features.
+
+The default `"block"` divides a domain's whole SVD block by ONE scalar, chosen
+so the retained components have root-mean-square standard deviation 1. That
+makes the content block sit at ~1.0 like the standardized structural block,
+and makes the four domains comparable, while leaving the shape of the SVD
+spectrum intact.
+
+`"per_dim"` (a StandardScaler over the 128 columns) is the more conventional
+choice and is available, but it is the wrong default here: it would force
+component 127 -- near-noise, especially for Cora, which retains only 53% of
+its variance in 128 dims -- to the same scale as component 0, amplifying noise
+and discarding exactly the importance ordering that SVD exists to produce.
+`"none"` reproduces the original unscaled behaviour.
+
+Like everything else here, the scalar is computed from TRAINING ROWS ONLY.
+
 A distinction worth being precise about, because it decides what counts as
 leakage here:
 
@@ -264,8 +286,11 @@ class UnifiedFeatureTransform:
 
     domain: str
     svd_dim: int = 128
+    svd_scaling: str = "block"
     svd: Any = None
     struct_scaler: Any = None
+    svd_scale: float = 1.0        # the single scalar, when svd_scaling == "block"
+    svd_dim_scaler: Any = None    # per-dimension scaler, when svd_scaling == "per_dim"
     n_components_used: int = 0
     padded_dims: int = 0
     raw_dim: int = 0
@@ -297,13 +322,26 @@ class UnifiedFeatureTransform:
         self.svd.fit(x[train_idx])
         self.explained_variance = float(self.svd.explained_variance_ratio_.sum())
 
+        # Put the SVD block on the same footing as the structural block, and
+        # on the same footing across domains. See the module note on scaling
+        # for why this is one scalar and not a per-dimension standardization.
+        reduced_train = self.svd.transform(x[train_idx])
+        if self.svd_scaling == "block":
+            rms = float(np.sqrt(reduced_train.var(axis=0).mean()))
+            self.svd_scale = rms if rms > 1e-12 else 1.0
+        elif self.svd_scaling == "per_dim":
+            self.svd_dim_scaler = StandardScaler().fit(reduced_train)
+        elif self.svd_scaling != "none":
+            raise ValueError(f"unknown svd_scaling {self.svd_scaling!r}")
+
         self.struct_scaler = StandardScaler()
         self.struct_scaler.fit(structural[train_idx])
 
         if verbose:
             pad = f", zero-padding {self.padded_dims}" if self.padded_dims else ""
+            scale = f" | /{self.svd_scale:.3f}" if self.svd_scaling == "block" else ""
             print(f"  {self.domain:<9} SVD {self.raw_dim} -> {k} dims{pad}  "
-                  f"| explains {self.explained_variance:.1%} of variance  "
+                  f"| explains {self.explained_variance:.1%} of variance{scale}  "
                   f"| fit on {len(train_idx):,} train nodes")
         return self
 
@@ -318,6 +356,12 @@ class UnifiedFeatureTransform:
 
         x = torch.cat([g.x for g in domain.graphs], dim=0).cpu().numpy()
         reduced = self.svd.transform(x)
+
+        # Rescale BEFORE padding, so the zero columns stay exactly zero.
+        if self.svd_scaling == "block":
+            reduced = reduced / self.svd_scale
+        elif self.svd_scaling == "per_dim":
+            reduced = self.svd_dim_scaler.transform(reduced)
 
         if self.padded_dims:
             pad = np.zeros((reduced.shape[0], self.padded_dims), dtype=reduced.dtype)
@@ -336,6 +380,7 @@ def build_unified_features(
     split: NodeSplit,
     seed: int = 0,
     svd_dim: int = 128,
+    svd_scaling: str = "block",
     structural: np.ndarray | None = None,
     verbose: bool = True,
 ) -> tuple[np.ndarray, UnifiedFeatureTransform, np.ndarray]:
@@ -348,7 +393,9 @@ def build_unified_features(
     if structural is None:
         structural = structural_features_for_domain(domain, verbose=verbose)
 
-    transform = UnifiedFeatureTransform(domain=domain.name, svd_dim=svd_dim)
+    transform = UnifiedFeatureTransform(
+        domain=domain.name, svd_dim=svd_dim, svd_scaling=svd_scaling
+    )
     transform.fit(domain, split.train_idx, structural, seed=seed, verbose=verbose)
     unified = transform.transform(domain, structural)
     return unified, transform, structural
