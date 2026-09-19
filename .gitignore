@@ -1,0 +1,28 @@
+# --- environment -----------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- data ------------------------------------------------------------------
+# Datasets are downloaded, not authored. ~1 GB; regenerate with notebook 01.
+data/
+
+# --- run artefacts ---------------------------------------------------------
+# Checkpoints are large and reproducible from a seed + config hash.
+checkpoints/
+*.pt
+*.pth
+
+# results/runs.jsonl and results/table.md ARE tracked: they are the findings.
+# Figures are tracked too, since the README links them.
+
+# --- editor / OS -----------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

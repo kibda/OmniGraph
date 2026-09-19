@@ -1,0 +1,33 @@
+# OmniGraph pinned dependencies.
+#
+# These pins are the CPU build of PyTorch, because that is what installs
+# correctly everywhere (laptop, CI, Kaggle, Colab). For a local NVIDIA GPU,
+# install torch from the CUDA index FIRST and then run this file:
+#
+#   pip install torch==2.9.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+#   pip install -r requirements.txt
+#
+# pip will leave the already-satisfied CUDA build in place.
+#
+# On Kaggle and Colab, torch is preinstalled with CUDA -- do not reinstall it.
+# Use the conditional install cell in notebooks/00_setup.ipynb instead.
+
+torch==2.9.1
+torch_geometric==2.8.0.post1
+
+numpy==2.5.3
+scipy==1.16.2
+pandas==2.3.3
+scikit-learn==1.7.2
+networkx==3.5
+
+matplotlib==3.10.6
+seaborn==0.13.2
+
+tqdm==4.67.1
+pytest==8.4.2
+
+# Notebook layer
+jupyterlab==4.4.9
+ipykernel==7.1.0
+ipywidgets==8.1.7
