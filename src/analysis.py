@@ -140,20 +140,34 @@ def degree_distance(domain_a, domain_b, bins: int = 60) -> float:
     return float(jensenshannon(pa, pb, base=2))
 
 
-def spectral_gap(domain, k: int = 6, max_nodes: int = 30_000, seed: int = 0) -> float:
-    """The normalised Laplacian's spectral gap: its second-smallest eigenvalue.
+def spectral_gap(domain, max_nodes: int = 20_000, seed: int = 0) -> float:
+    """The normalised Laplacian's spectral gap on the largest connected component.
 
-    Also called the Fiedler value. It measures how hard the graph is to cut in
-    two: near 0 means the graph falls apart into weakly connected communities,
+    Also called the Fiedler value: the second-smallest eigenvalue of the
+    normalised Laplacian. It measures how hard the graph is to cut in two.
+    Near 0 means the graph falls apart into weakly connected communities;
     larger means it is well mixed. This is a global property that degree
     statistics cannot see -- two graphs can share a degree distribution and
-    have completely different community structure.
+    have entirely different community structure.
 
-    Large graphs are subsampled to a connected-ish induced subgraph first,
-    because computing eigenvalues of a 203,769-node Laplacian is not worth the
-    time for a summary statistic.
+    Two details that matter, both learned by getting NaN without them:
+
+    * **Largest connected component only.** A disconnected graph has one zero
+      eigenvalue per component, so its Fiedler value is exactly 0 and carries
+      no information. Cora and Elliptic are both disconnected, so the gap is
+      computed on their largest component -- which is the quantity people mean
+      when they quote a spectral gap for a real-world graph.
+
+    * **Shift-invert.** Asking ARPACK for the smallest-magnitude eigenvalues
+      directly (`which="SM"`) converges badly and returned NaN on two of four
+      domains here. Shifting around sigma=0 turns it into a largest-magnitude
+      problem, which ARPACK handles well.
+
+    Large graphs are subsampled first: this is a summary statistic, not worth
+    a full eigendecomposition of a 203,769-node Laplacian.
     """
     import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
     from scipy.sparse.linalg import eigsh
 
     from .features import _to_sparse_adjacency
@@ -163,34 +177,45 @@ def spectral_gap(domain, k: int = 6, max_nodes: int = 30_000, seed: int = 0) -> 
     edge_index = g.edge_index
 
     if n > max_nodes:
-        from torch_geometric.utils import k_hop_subgraph
         import torch
+        from torch_geometric.utils import k_hop_subgraph
 
         rng = torch.Generator().manual_seed(seed)
-        seeds = torch.randperm(n, generator=rng)[: max_nodes // 8]
+        seeds = torch.randperm(n, generator=rng)[: max_nodes // 10]
         subset, edge_index, _, _ = k_hop_subgraph(
             seeds, 2, edge_index, relabel_nodes=True, num_nodes=n
         )
         n = int(subset.numel())
 
     adj = _to_sparse_adjacency(edge_index, n)
+
+    # Restrict to the largest connected component.
+    n_comp, labels = connected_components(adj, directed=False)
+    if n_comp > 1:
+        biggest = np.bincount(labels).argmax()
+        keep = labels == biggest
+        adj = adj[keep][:, keep]
+
     deg = np.asarray(adj.sum(axis=1)).ravel()
-    keep = deg > 0
-    if keep.sum() < 3:
-        return float("nan")
-    adj = adj[keep][:, keep]
-    deg = np.asarray(adj.sum(axis=1)).ravel()
+    if adj.shape[0] < 3 or deg.min() <= 0:
+        keep = deg > 0
+        if keep.sum() < 3:
+            return float("nan")
+        adj = adj[keep][:, keep]
+        deg = np.asarray(adj.sum(axis=1)).ravel()
 
     d_inv_sqrt = sp.diags(1.0 / np.sqrt(deg))
-    laplacian = sp.eye(adj.shape[0]) - d_inv_sqrt @ adj @ d_inv_sqrt
+    laplacian = (sp.eye(adj.shape[0]) - d_inv_sqrt @ adj @ d_inv_sqrt).tocsc()
+
     try:
-        vals = eigsh(laplacian, k=min(k, adj.shape[0] - 1), which="SM",
-                     return_eigenvectors=False, maxiter=5000)
-    except Exception:  # noqa: BLE001 - ARPACK can fail to converge
+        vals = eigsh(laplacian, k=2, sigma=0.0, which="LM",
+                     return_eigenvectors=False, maxiter=10_000)
+    except Exception:  # noqa: BLE001 - ARPACK may still fail on odd graphs
         return float("nan")
+
     vals = np.sort(np.real(vals))
-    positive = vals[vals > 1e-8]
-    return float(positive[0]) if positive.size else float("nan")
+    # vals[0] is the ~0 eigenvalue of the connected component; vals[1] is the gap.
+    return float(vals[1]) if vals.size > 1 else float("nan")
 
 
 def domain_similarity_table(domains: dict) -> "Any":  # noqa: F821
