@@ -600,3 +600,187 @@ def plot_label_efficiency(sweep_df, arm_label: str = "",
     if save_as:
         print(f"saved -> {save_figure(fig, save_as)}")
     return fig
+
+
+# --------------------------------------------------------------------------
+# Results (notebooks 06-07)
+# --------------------------------------------------------------------------
+
+ARM_COLORS = {
+    "B_random": "#8a8985",     # grey: the floor, deliberately recessive
+    "D_expert": "#eb6834",     # orange
+    "A_transfer": "#2a78d6",   # blue: the arm under test
+    "C_scratch": "#1baf7a",    # aqua: the ceiling
+}
+
+
+def plot_label_efficiency_by_arm(summary, save_as: str | None = "06_label_efficiency"):
+    """Every arm's label-efficiency curve, one panel per domain.
+
+    Faceted because the four domains use three different metrics -- accuracy,
+    micro-F1 and AUC-PR are not comparable numbers and must never share an
+    axis. Each panel carries its own metric in the title.
+
+    Arm B is drawn in grey rather than a hue: it is the floor, and the whole
+    question is whether the coloured arms clear it.
+    """
+    import matplotlib.pyplot as plt
+
+    from .results import ARM_LABELS, ARM_ORDER
+
+    domains = [d for d in DOMAIN_COLORS if d in set(summary["target"])]
+    fig, axes = plt.subplots(1, len(domains), figsize=(3.4 * len(domains), 3.9))
+    if len(domains) == 1:
+        axes = [axes]
+
+    for ax, target in zip(axes, domains):
+        block = summary[summary["target"] == target]
+        for arm in ARM_ORDER:
+            row = block[block["arm"] == arm].sort_values("fraction")
+            if row.empty:
+                continue
+            x = row["fraction"] * 100
+            y, err = row["mean"].to_numpy(), row["std"].to_numpy()
+            color = ARM_COLORS[arm]
+            ax.plot(x, y, color=color, linewidth=2.0, marker="o", markersize=4.5,
+                    label=ARM_LABELS[arm], zorder=3)
+            # Shaded band = +/- 1 std over seeds. Where bands overlap, the arms
+            # are not distinguishable.
+            ax.fill_between(x, y - err, y + err, color=color, alpha=0.15, linewidth=0)
+
+        ax.set_xscale("log")
+        ax.set_xticks([1, 5, 10, 50, 100])
+        ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        ax.set_xlabel("% of training labels")
+        metric = block["metric"].iloc[0]
+        ax.set_title(f"{target}\n({metric})", color=TEXT_PRIMARY, fontsize=9)
+        ax.grid(axis="x", visible=False)
+        if ax is axes[0]:
+            ax.set_ylabel("test score")
+
+    axes[0].legend(loc="lower right", fontsize=7.5)
+    fig.suptitle(
+        "Does pretraining help? Shaded bands are +/- 1 std over 3 seeds",
+        fontsize=12, fontweight="semibold", color=TEXT_PRIMARY, y=1.04,
+    )
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
+
+
+def plot_gain_heatmap(gains, column: str = "gain_vs_expert",
+                      title: str = "", save_as: str | None = "06_transfer_gain"):
+    """Transfer gain per (domain, label fraction), as a diverging heatmap.
+
+    Diverging because the quantity has a meaningful zero: above it pretraining
+    helped, below it hurt. Two poles with a neutral midpoint, so "no effect"
+    reads as nothing rather than as a colour.
+
+    Cells whose gain is smaller than its own spread across seeds are hatched.
+    Those are not evidence of a difference in either direction, and the
+    hatching is what stops the eye reading a faint colour as a finding.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+
+    mean_col, std_col = f"{column}_mean", f"{column}_std"
+    piv = gains.pivot(index="target", columns="fraction", values=mean_col)
+    spread = gains.pivot(index="target", columns="fraction", values=std_col)
+    order = [d for d in DOMAIN_COLORS if d in piv.index]
+    piv, spread = piv.loc[order], spread.loc[order]
+
+    cmap = LinearSegmentedColormap.from_list(
+        "gain", ["#b3261e", "#e7a6a1", "#f0efec", "#9ec5f4", "#184f95"]
+    )
+    limit = float(np.nanmax(np.abs(piv.to_numpy()))) or 0.01
+    norm = TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+
+    fig, ax = plt.subplots(figsize=(1.35 * piv.shape[1] + 3.6,
+                                    0.72 * piv.shape[0] + 2.4))
+    im = ax.imshow(piv.to_numpy(), cmap=cmap, norm=norm, aspect="auto")
+
+    for i in range(piv.shape[0]):
+        for j in range(piv.shape[1]):
+            val, sd = piv.iat[i, j], spread.iat[i, j]
+            if np.isnan(val):
+                continue
+            weak = abs(val) <= sd
+            if weak:
+                ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
+                                           hatch="///", edgecolor=TEXT_MUTED,
+                                           linewidth=0.0, alpha=0.55))
+            ax.text(j, i, f"{val:+.3f}", ha="center", va="center", fontsize=8.5,
+                    color=TEXT_PRIMARY,
+                    fontweight="normal" if weak else "semibold")
+
+    ax.set_xticks(range(piv.shape[1]))
+    ax.set_xticklabels([f"{f:.0%}" for f in piv.columns])
+    ax.set_yticks(range(piv.shape[0]))
+    ax.set_yticklabels(piv.index)
+    ax.set_xlabel("% of training labels")
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.82)
+    cbar.set_label("gain (positive = pretraining helped)", fontsize=8)
+    cbar.outline.set_visible(False)
+
+    ax.set_title(title or "Transfer gain", color=TEXT_PRIMARY, pad=12)
+    ax.annotate(
+        "hatched = gain smaller than its spread across seeds, i.e. not evidence",
+        xy=(0.0, -0.26), xycoords="axes fraction", fontsize=7.5,
+        color=TEXT_SECONDARY,
+    )
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
+
+
+def plot_similarity_vs_gain(points, xcol: str = "distance",
+                            xlabel: str = "degree-distribution distance (Jensen-Shannon)",
+                            save_as: str | None = "07_similarity_vs_gain"):
+    """Does structural similarity between source and target predict transfer?
+
+    One point per (source, target) pair. If similar domains transferred
+    better, the points would trend downward: more distance, less gain. The
+    fitted line and its correlation are drawn so the claim can be judged
+    rather than eyeballed -- and with only a handful of pairs, a correlation
+    is weak evidence whichever way it points, which the notebook says plainly.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6.6, 4.4))
+    for _, r in points.iterrows():
+        ax.scatter(r[xcol], r["gain"], s=64, color=color_for(r["target"]),
+                   zorder=3, linewidths=0)
+        ax.annotate(f"{r['source']} to {r['target']}",
+                    xy=(r[xcol], r["gain"]), xytext=(6, 4),
+                    textcoords="offset points", fontsize=7,
+                    color=TEXT_SECONDARY)
+
+    x, y = points[xcol].to_numpy(float), points["gain"].to_numpy(float)
+    ok = ~(np.isnan(x) | np.isnan(y))
+    if ok.sum() >= 3:
+        slope, intercept = np.polyfit(x[ok], y[ok], 1)
+        xs = np.linspace(x[ok].min(), x[ok].max(), 50)
+        ax.plot(xs, slope * xs + intercept, color=TEXT_SECONDARY,
+                linestyle="--", linewidth=1.4, zorder=2)
+        r_val = float(np.corrcoef(x[ok], y[ok])[0, 1])
+        ax.annotate(f"Pearson r = {r_val:+.2f}   (n = {int(ok.sum())} pairs)",
+                    xy=(0.03, 0.96), xycoords="axes fraction", va="top",
+                    fontsize=9, color=TEXT_PRIMARY)
+
+    ax.axhline(0.0, color=TEXT_MUTED, linewidth=1.0, linestyle=":")
+    ax.annotate("no gain", xy=(ax.get_xlim()[1], 0.0), xytext=(-4, 4),
+                textcoords="offset points", ha="right", fontsize=7.5,
+                color=TEXT_MUTED)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("transfer gain over random init")
+    ax.set_title("Does domain similarity predict transfer?", color=TEXT_PRIMARY)
+    fig.tight_layout()
+    if save_as:
+        print(f"saved -> {save_figure(fig, save_as)}")
+    return fig
