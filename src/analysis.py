@@ -107,3 +107,108 @@ def compare_encoders(results: dict[str, dict[str, float]]) -> "Any":  # noqa: F8
     import pandas as pd
 
     return pd.DataFrame(results).T
+
+
+# --------------------------------------------------------------------------
+# Domain similarity (notebook 07)
+# --------------------------------------------------------------------------
+
+def degree_distance(domain_a, domain_b, bins: int = 60) -> float:
+    """How unlike two domains' degree distributions are.
+
+    Jensen-Shannon distance between the two log-degree histograms, on a shared
+    bin grid. Chosen over a raw KL divergence for two reasons: it is symmetric
+    (there is no "reference" domain here), and it is finite even when one
+    distribution puts zero mass where the other does not -- which happens
+    constantly, since Elliptic's maximum degree is 472 and Photo's is 1434.
+
+    0 means identical, 1 means maximally different.
+    """
+    from scipy.spatial.distance import jensenshannon
+
+    from .describe import degree_array
+
+    a = np.log1p(degree_array(domain_a))
+    b = np.log1p(degree_array(domain_b))
+    lo, hi = 0.0, float(max(a.max(), b.max()))
+    grid = np.linspace(lo, hi, bins + 1)
+
+    pa, _ = np.histogram(a, bins=grid, density=False)
+    pb, _ = np.histogram(b, bins=grid, density=False)
+    pa = pa / max(pa.sum(), 1)
+    pb = pb / max(pb.sum(), 1)
+    return float(jensenshannon(pa, pb, base=2))
+
+
+def spectral_gap(domain, k: int = 6, max_nodes: int = 30_000, seed: int = 0) -> float:
+    """The normalised Laplacian's spectral gap: its second-smallest eigenvalue.
+
+    Also called the Fiedler value. It measures how hard the graph is to cut in
+    two: near 0 means the graph falls apart into weakly connected communities,
+    larger means it is well mixed. This is a global property that degree
+    statistics cannot see -- two graphs can share a degree distribution and
+    have completely different community structure.
+
+    Large graphs are subsampled to a connected-ish induced subgraph first,
+    because computing eigenvalues of a 203,769-node Laplacian is not worth the
+    time for a summary statistic.
+    """
+    import scipy.sparse as sp
+    from scipy.sparse.linalg import eigsh
+
+    from .features import _to_sparse_adjacency
+
+    g = domain.graphs[0]
+    n = g.num_nodes
+    edge_index = g.edge_index
+
+    if n > max_nodes:
+        from torch_geometric.utils import k_hop_subgraph
+        import torch
+
+        rng = torch.Generator().manual_seed(seed)
+        seeds = torch.randperm(n, generator=rng)[: max_nodes // 8]
+        subset, edge_index, _, _ = k_hop_subgraph(
+            seeds, 2, edge_index, relabel_nodes=True, num_nodes=n
+        )
+        n = int(subset.numel())
+
+    adj = _to_sparse_adjacency(edge_index, n)
+    deg = np.asarray(adj.sum(axis=1)).ravel()
+    keep = deg > 0
+    if keep.sum() < 3:
+        return float("nan")
+    adj = adj[keep][:, keep]
+    deg = np.asarray(adj.sum(axis=1)).ravel()
+
+    d_inv_sqrt = sp.diags(1.0 / np.sqrt(deg))
+    laplacian = sp.eye(adj.shape[0]) - d_inv_sqrt @ adj @ d_inv_sqrt
+    try:
+        vals = eigsh(laplacian, k=min(k, adj.shape[0] - 1), which="SM",
+                     return_eigenvectors=False, maxiter=5000)
+    except Exception:  # noqa: BLE001 - ARPACK can fail to converge
+        return float("nan")
+    vals = np.sort(np.real(vals))
+    positive = vals[vals > 1e-8]
+    return float(positive[0]) if positive.size else float("nan")
+
+
+def domain_similarity_table(domains: dict) -> "Any":  # noqa: F821
+    """Pairwise degree-distribution distance, plus each domain's spectral gap.
+
+    Notebook 07 asks whether these predict transfer gain. Both are computed
+    from graph structure alone -- no labels, no features -- so they are
+    available before any transfer is attempted, which is what would make them
+    useful if the relationship held.
+    """
+    import pandas as pd
+
+    names = list(domains)
+    dist = pd.DataFrame(index=names, columns=names, dtype=float)
+    for a in names:
+        for b in names:
+            dist.loc[a, b] = 0.0 if a == b else degree_distance(domains[a], domains[b])
+
+    gaps = pd.Series({n: spectral_gap(d) for n, d in domains.items()},
+                     name="spectral_gap")
+    return dist, gaps
