@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import random
+import warnings
 
 import numpy as np
 
@@ -37,6 +38,25 @@ def set_seed(seed: int, deterministic: bool = True) -> int:
     if deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+        # cuDNN flags alone are not enough. GIN aggregates neighbours with a
+        # scatter-add, which on CUDA uses atomics whose summation order varies
+        # between runs -- floating-point addition is not associative, so the
+        # result varies in the last bits. Through pretraining and a probe those
+        # differences amplify: the same config scored 0.7823, 0.7731 and 0.7694
+        # on three consecutive runs before this was switched on.
+        #
+        # This costs roughly 20% runtime and is worth it: without it,
+        # results/runs.jsonl cannot be reproduced from a config hash and seed,
+        # which is the guarantee the whole results table rests on.
+        try:
+            torch.use_deterministic_algorithms(True)
+        except Exception as exc:  # noqa: BLE001 - never fail a run over this
+            warnings.warn(
+                f"Could not enable deterministic algorithms ({exc}). Runs will "
+                "still be seeded, but may not be bit-reproducible.",
+                RuntimeWarning, stacklevel=2,
+            )
 
     return seed
 
