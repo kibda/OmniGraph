@@ -137,11 +137,13 @@ def _pretrained_encoder(config: RunConfig, prepared: dict[str, PreparedDomain],
             encoder, src_domains[name], src_features[name], device,
             steps=budget.pretrain_steps, lr=budget.pretrain_lr,
             patience=budget.pretrain_patience, seed=config.seed, verbose=verbose,
+            objective=config.pretrain_objective,
         )
     return pretrain.pretrain_multi_domain(
         encoder, src_domains, src_features, device,
         steps=budget.pretrain_steps, lr=budget.pretrain_lr,
         patience=budget.pretrain_patience, seed=config.seed, verbose=verbose,
+        objective=config.pretrain_objective,
     )
 
 
@@ -177,7 +179,7 @@ def embedding_cache_key(config: RunConfig) -> tuple:
     """
     return (config.arm, config.target_domain, tuple(config.source_domains),
             config.seed, config.svd_scaling, config.hidden_dim,
-            config.out_dim, config.num_layers)
+            config.out_dim, config.num_layers, config.pretrain_objective)
 
 
 def run_arm(
@@ -264,7 +266,8 @@ def run_arm(
                                                    budget, verbose)
             outcome.pretrain_seconds = time.perf_counter() - t_pre
             outcome.pretrain_summary = {
-                "sources": list(config.source_domains),
+                "objective": config.pretrain_objective,
+            "sources": list(config.source_domains),
                 "steps_run": len(history.steps),
                 "best_loss": history.best_loss,
                 "final_disc_accuracy": history.accuracy[-1] if history.accuracy else None,

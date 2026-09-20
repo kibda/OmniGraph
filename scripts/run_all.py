@@ -43,6 +43,11 @@ def parse_args(argv=None):
                    help="label fractions (default: 0.01 0.05 0.1 0.5 1.0)")
     p.add_argument("--arms", nargs="*", default=None,
                    help="restrict to these arms")
+    p.add_argument("--objective", default="dgi", choices=["dgi", "mae"],
+                   help="pretraining objective: dgi (contrastive, the original "
+                        "runs) or mae (masked feature reconstruction). Results "
+                        "are logged with distinct run ids, so the two never "
+                        "collide and either can be resumed independently.")
     p.add_argument("--smoke", action="store_true",
                    help="tiny budget -- exercises the code, produces no results")
     p.add_argument("--no-experts", action="store_true",
@@ -68,10 +73,18 @@ def main(argv=None) -> int:
     config.ensure_dirs()
 
     budget = arms.Budget.smoke() if args.smoke else arms.Budget()
+    template = RunConfig(pretrain_objective=args.objective)
     configs = arms.matrix_configs(
         targets=args.targets, seeds=args.seeds, fractions=args.fractions,
-        include_experts=not args.no_experts,
+        include_experts=not args.no_experts, base=template,
     )
+    if args.objective != "dgi":
+        # Arm B and arm C never pretrain, so their numbers do not depend on the
+        # objective -- but they are still re-run here on purpose. Comparing an
+        # MAE arm A against a DGI-era arm B would confound the objective with
+        # the machine the baseline was produced on, and these runs are cheap.
+        print(f"  objective     : {args.objective}  (arms B and C re-run as "
+              f"same-machine baselines)")
     if args.arms:
         configs = [c for c in configs if c.arm in set(args.arms)]
 

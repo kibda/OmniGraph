@@ -137,7 +137,11 @@ class RunConfig:
     out_dim: int = 128
     num_layers: int = 2
 
-    # --- pretraining (DGI) ------------------------------------------------
+    # --- pretraining ------------------------------------------------------
+    # dgi = Deep Graph Infomax (contrastive); mae = masked feature
+    # reconstruction (generative). Part of the hash, so runs under the two
+    # objectives never collide in runs.jsonl.
+    pretrain_objective: str = "dgi"
     pretrain_epochs: int = 300
     pretrain_lr: float = 1e-3
     pretrain_patience: int = 30
@@ -160,6 +164,16 @@ class RunConfig:
         d["source_domains"] = list(self.source_domains)
         return d
 
+    #: Fields added AFTER results were first logged. They are left out of the
+    #: hash while they hold their default value, so adding an option does not
+    #: invalidate every run already in results/runs.jsonl.
+    #:
+    #: Without this, introducing `pretrain_objective` changed the hash of all
+    #: 360 completed runs, and run_all.py would have cheerfully re-run seven
+    #: hours of finished work. A non-default value still changes the hash, so
+    #: the two objectives can never collide.
+    _HASH_EXEMPT_WHEN_DEFAULT = {"pretrain_objective": "dgi"}
+
     @property
     def hash(self) -> str:
         """12-char fingerprint of the configuration, seed included.
@@ -168,13 +182,17 @@ class RunConfig:
         to the computation, so editing it must not invalidate a finished run.
         """
         payload = {k: v for k, v in self.to_dict().items() if k != "notes"}
+        for field_name, default in self._HASH_EXEMPT_WHEN_DEFAULT.items():
+            if payload.get(field_name) == default:
+                payload.pop(field_name, None)
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
     @property
     def run_id(self) -> str:
+        obj = "" if self.pretrain_objective == "dgi" else f"__{self.pretrain_objective}"
         return (
-            f"{self.arm}__{self.target_domain}"
+            f"{self.arm}__{self.target_domain}{obj}"
             f"__lf{self.label_fraction:g}__s{self.seed}__{self.hash}"
         )
 

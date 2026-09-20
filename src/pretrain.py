@@ -56,7 +56,25 @@ class PretrainHistory:
         }
 
 
-def _run_batch(model: DeepGraphInfomax, batch: GraphBatch, device,
+def build_objective(encoder, domains: list[str], objective: str = "dgi"):
+    """Wrap the shared encoder in a pretraining objective.
+
+    Both objectives expose the same interface -- callable with
+    (x, edge_index, domain, generator), returning something with `.loss` and
+    `.accuracy` -- so the training loop below needs no knowledge of which one
+    it is driving. That is what keeps the two experiments comparable: only the
+    objective differs, every other line of code is shared.
+    """
+    if objective == "dgi":
+        return DeepGraphInfomax(encoder, domains)
+    if objective == "mae":
+        from .mae import GraphMAE
+
+        return GraphMAE(encoder, domains)
+    raise ValueError(f"unknown pretraining objective {objective!r}")
+
+
+def _run_batch(model, batch: GraphBatch, device,
                generator: torch.Generator | None = None):
     batch = batch.to(device)
     return model(batch.x, batch.edge_index, batch.domain, generator=generator)
@@ -148,13 +166,14 @@ def pretrain_single_domain(
     seed: int = 0,
     log_every: int = 25,
     verbose: bool = True,
+    objective: str = "dgi",
     **batcher_kwargs,
 ) -> tuple[GINEncoder, PretrainHistory]:
     """Pretrain on one domain. Arm D, and what notebook 03 demonstrates."""
     batcher = DomainBatcher(domain, x, seed=seed, **batcher_kwargs)
-    model = DeepGraphInfomax(encoder, [domain.name])
+    model = build_objective(encoder, [domain.name], objective)
     if verbose:
-        print(f"  pretraining on {domain.name} | {batcher.strategy}")
+        print(f"  pretraining [{objective}] on {domain.name} | {batcher.strategy}")
     history = _pretrain(model, {domain.name: batcher}, device, steps, lr,
                         patience, seed, log_every, verbose)
     return model.encoder, history
@@ -171,6 +190,7 @@ def pretrain_multi_domain(
     seed: int = 0,
     log_every: int = 25,
     verbose: bool = True,
+    objective: str = "dgi",
     **batcher_kwargs,
 ) -> tuple[GINEncoder, PretrainHistory]:
     """Pretrain one shared encoder on several domains, round-robin. Arm A."""
@@ -178,9 +198,9 @@ def pretrain_multi_domain(
         name: DomainBatcher(d, features_by_domain[name], seed=seed, **batcher_kwargs)
         for name, d in domains.items()
     }
-    model = DeepGraphInfomax(encoder, list(domains))
+    model = build_objective(encoder, list(domains), objective)
     if verbose:
-        print(f"  pretraining on {len(domains)} domains round-robin: {list(domains)}")
+        print(f"  pretraining [{objective}] on {len(domains)} domains round-robin: {list(domains)}")
         for name, b in batchers.items():
             print(f"    {name:<10} {b.strategy}")
     history = _pretrain(model, batchers, device, steps, lr, patience, seed,
