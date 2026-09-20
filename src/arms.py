@@ -55,8 +55,12 @@ class Budget:
     probe_epochs: int = 3000
     probe_patience: int = 200
     probe_lr: float = 0.5
-    scratch_epochs: int = 300
-    scratch_patience: int = 50
+    # Arm C is the upper bound, so it must actually reach one. At 300/50 it
+    # was still climbing on PPI and Elliptic in notebook 04, which makes the
+    # reported ceiling a lower bound and understates every arm's headroom.
+    # Arm C is only 60 of the 360 runs, so the extra budget is cheap.
+    scratch_epochs: int = 600
+    scratch_patience: int = 80
     scratch_lr: float = 1e-3
 
     @classmethod
